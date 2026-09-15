@@ -192,6 +192,43 @@ class CriterionAudit:
         self.rows.append({"criterion": name, "before": before, "selected": selected, "rejected": rejected, "retention": retention, "rejection": rejection})
 
 
+class TrendSignalAudit:
+    """Diagnostic des étapes du signal cœur, sans modifier les règles d'entrée."""
+    def __init__(self) -> None:
+        self.total = 0
+        self.long_flip = 0
+        self.short_flip = 0
+        self.long_adx = 0
+        self.short_adx = 0
+        self.long_ema = 0
+        self.short_ema = 0
+        self.final_long = 0
+        self.final_short = 0
+        self.errors = 0
+
+    def consume(self, asset: Dict[str, Any]) -> None:
+        self.total += 1
+        direction = asset.get("diagnosticFlipDirection")
+        if direction == "LONG":
+            self.long_flip += 1
+            if asset.get("diagnosticAdxOk"):
+                self.long_adx += 1
+                if asset.get("diagnosticEmaOk"):
+                    self.long_ema += 1
+        elif direction == "SHORT":
+            self.short_flip += 1
+            if asset.get("diagnosticAdxOk"):
+                self.short_adx += 1
+                if asset.get("diagnosticEmaOk"):
+                    self.short_ema += 1
+        if asset.get("signalDirection") == "LONG":
+            self.final_long += 1
+        elif asset.get("signalDirection") == "SHORT":
+            self.final_short += 1
+        if asset.get("signalError"):
+            self.errors += 1
+
+
 def apply_criterion(assets: List[Dict[str, Any]], audit: CriterionAudit, name: str, predicate: Callable[[Dict[str, Any]], bool]) -> List[Dict[str, Any]]:
     before = len(assets)
     selected = [asset for asset in assets if predicate(asset)]
@@ -611,14 +648,25 @@ def compute_trend_signal(asset: Dict[str, Any], warnings: List[str]) -> None:
 
     # --- Cœur du signal : flip Supertrend sur la dernière bougie close,
     # avec confirmation EMA200 (direction) et ADX (force) sur cette même
-    # bougie. Rien n'est envoyé si le flip n'est pas confirmé.
+    # bougie. Les champs diagnostic* servent uniquement à expliquer les
+    # rejets dans le rapport ; ils ne modifient aucune règle d'entrée.
     signal_direction: Optional[str] = None
+    flip_direction: Optional[str] = None
     if st_dir[last] is not None and st_dir[prev] is not None and st_dir[last] != st_dir[prev]:
-        if ema_trend[last] is not None and adx_vals[last] is not None and adx_vals[last] >= ADX_THRESHOLD:
-            if st_dir[last] == "UP" and closes[last] > ema_trend[last] and TREND_SIGNAL_DIRECTIONS in ("LONG", "BOTH"):
-                signal_direction = "LONG"
-            elif st_dir[last] == "DOWN" and closes[last] < ema_trend[last] and TREND_SIGNAL_DIRECTIONS in ("SHORT", "BOTH"):
-                signal_direction = "SHORT"
+        flip_direction = "LONG" if st_dir[last] == "UP" else "SHORT"
+
+    adx_ok = adx_vals[last] is not None and adx_vals[last] >= ADX_THRESHOLD
+    ema_long_ok = ema_trend[last] is not None and closes[last] > ema_trend[last]
+    ema_short_ok = ema_trend[last] is not None and closes[last] < ema_trend[last]
+
+    asset["diagnosticFlipDirection"] = flip_direction
+    asset["diagnosticAdxOk"] = adx_ok
+    asset["diagnosticEmaOk"] = ema_long_ok if flip_direction == "LONG" else (ema_short_ok if flip_direction == "SHORT" else False)
+
+    if flip_direction == "LONG" and adx_ok and ema_long_ok and TREND_SIGNAL_DIRECTIONS in ("LONG", "BOTH"):
+        signal_direction = "LONG"
+    elif flip_direction == "SHORT" and adx_ok and ema_short_ok and TREND_SIGNAL_DIRECTIONS in ("SHORT", "BOTH"):
+        signal_direction = "SHORT"
 
     asset["signalDirection"] = signal_direction
     asset["emaTrend"] = ema_trend[last]
@@ -678,9 +726,10 @@ def compute_trend_signal(asset: Dict[str, Any], warnings: List[str]) -> None:
     asset["confidenceScore"] = score
 
 
-def merge_trend_signals(assets: List[Dict[str, Any]], warnings: List[str]) -> None:
+def merge_trend_signals(assets: List[Dict[str, Any]], warnings: List[str]) -> TrendSignalAudit:
+    audit = TrendSignalAudit()
     if not assets:
-        return
+        return audit
     workers = max(1, min(TREND_WORKERS, len(assets)))
     failures = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
@@ -694,8 +743,10 @@ def merge_trend_signals(assets: List[Dict[str, Any]], warnings: List[str]) -> No
             except Exception as exc:
                 failures += 1
                 asset["signalError"] = str(exc)
+            audit.consume(asset)
     if failures:
         warnings.append(f"Calcul du signal trend following : {failures} échecs sur {len(assets)} paires.")
+    return audit
 
 
 # ----------------------------- REPORTING -----------------------------
@@ -753,7 +804,90 @@ def signals_table_html(title: str, signals: List[Dict[str, Any]]) -> str:
     return "".join(html)
 
 
-def build_report(assets: List[Dict[str, Any]], audit: CriterionAudit, warnings: List[str], errors: List[str]) -> str:
+def signal_audit_to_html(signal_audit: TrendSignalAudit) -> str:
+    rows = [
+        ("Actifs analysés", signal_audit.total),
+        ("Flip Supertrend LONG", signal_audit.long_flip),
+        ("Flip LONG + ADX ≥ seuil", signal_audit.long_adx),
+        ("Flip LONG + ADX + EMA200", signal_audit.long_ema),
+        ("Signal LONG final", signal_audit.final_long),
+        ("Flip Supertrend SHORT", signal_audit.short_flip),
+        ("Flip SHORT + ADX ≥ seuil", signal_audit.short_adx),
+        ("Flip SHORT + ADX + EMA200", signal_audit.short_ema),
+        ("Signal SHORT final", signal_audit.final_short),
+    ]
+    html = [
+        "<table border='1' cellpadding='5' cellspacing='0'>",
+        "<tr><th>Étape du signal cœur</th><th>Nombre</th></tr>",
+    ]
+    for label, value in rows:
+        html.append(f"<tr><td>{html_escape(label)}</td><td>{value:,}</td></tr>")
+    html.append("</table>")
+    if signal_audit.errors:
+        html.append(f"<p><b>Erreurs techniques de calcul :</b> {signal_audit.errors:,}</p>")
+    return "".join(html)
+
+
+def diagnostic_reason(asset: Dict[str, Any]) -> str:
+    direction = asset.get("diagnosticFlipDirection")
+    if not direction:
+        return "Pas de flip Supertrend sur la dernière bougie"
+    if not asset.get("diagnosticAdxOk"):
+        adx = format_number(asset.get("adx"), 2)
+        return f"ADX insuffisant ({adx} < {ADX_THRESHOLD:.0f})"
+    if not asset.get("diagnosticEmaOk"):
+        return "Confirmation EMA200 non satisfaite"
+    if direction == "LONG" and TREND_SIGNAL_DIRECTIONS not in ("LONG", "BOTH"):
+        return "Direction LONG désactivée"
+    if direction == "SHORT" and TREND_SIGNAL_DIRECTIONS not in ("SHORT", "BOTH"):
+        return "Direction SHORT désactivée"
+    return "Signal final"
+
+
+def near_miss_table_html(assets: List[Dict[str, Any]], limit: int = 10) -> str:
+    candidates = [a for a in assets if a.get("diagnosticFlipDirection") and not a.get("signalDirection") and not a.get("signalError")]
+    def priority(a: Dict[str, Any]) -> Tuple[int, float]:
+        # Priorité aux flips qui ne ratent qu'une confirmation ; puis proximité
+        # de l'ADX au seuil. Ce classement est diagnostique uniquement.
+        direction = a.get("diagnosticFlipDirection")
+        adx = as_float(a.get("adx"), -1.0)
+        ema_ok = bool(a.get("diagnosticEmaOk"))
+        adx_ok = bool(a.get("diagnosticAdxOk"))
+        if adx_ok and not ema_ok:
+            rank = 1
+            distance = abs(as_float(a.get("closePrice")) - as_float(a.get("emaTrend"))) / max(abs(as_float(a.get("emaTrend"))), 1e-12)
+        elif not adx_ok:
+            rank = 2
+            distance = abs(adx - ADX_THRESHOLD) if adx >= 0 else 999.0
+        else:
+            rank = 3
+            distance = 999.0
+        return rank, distance
+    candidates.sort(key=priority)
+    selected = candidates[:limit]
+    if not selected:
+        return "<p>Aucun flip Supertrend non confirmé à afficher.</p>"
+    html = [
+        f"<p>Top {len(selected)} des candidats ayant déclenché un flip Supertrend mais n'ayant pas satisfait le signal cœur.</p>",
+        "<table border='1' cellpadding='5' cellspacing='0'>",
+        "<tr><th>Symbol</th><th>Direction</th><th>Prix</th><th>EMA200</th><th>ADX</th><th>Motif de rejet</th></tr>",
+    ]
+    for a in selected:
+        html.append(
+            "<tr>"
+            f"<td><b>{html_escape(a.get('symbol', '-'))}</b></td>"
+            f"<td>{html_escape(a.get('diagnosticFlipDirection', '-'))}</td>"
+            f"<td>{format_number(a.get('closePrice'), 6)}</td>"
+            f"<td>{format_number(a.get('emaTrend'), 6)}</td>"
+            f"<td>{format_number(a.get('adx'), 2)}</td>"
+            f"<td>{html_escape(diagnostic_reason(a))}</td>"
+            "</tr>"
+        )
+    html.append("</table>")
+    return "".join(html)
+
+
+def build_report(assets: List[Dict[str, Any]], audit: CriterionAudit, signal_audit: TrendSignalAudit, warnings: List[str], errors: List[str]) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     long_signals = [a for a in assets if a.get("signalDirection") == "LONG"]
     short_signals = [a for a in assets if a.get("signalDirection") == "SHORT"]
@@ -770,6 +904,11 @@ def build_report(assets: List[Dict[str, Any]], audit: CriterionAudit, warnings: 
         "<hr>",
         signals_table_html("Signaux LONG", long_signals),
         signals_table_html("Signaux SHORT", short_signals),
+        "<hr><h2>Diagnostic de génération des signaux</h2>",
+        "<p>Ce diagnostic explique où les candidats échouent. Il est informatif uniquement et ne modifie aucune règle de la stratégie.</p>",
+        signal_audit_to_html(signal_audit),
+        "<h3>Meilleurs candidats rejetés</h3>",
+        near_miss_table_html(assets, 10),
         "<hr><h2>Pipeline de filtrage (repris du screener V3)</h2>",
         audit_to_html(audit),
         "<h2>Paramètres principaux</h2><ul>",
@@ -808,6 +947,7 @@ def main() -> int:
     started = time.time()
     warnings: List[str] = []
     errors: List[str] = []
+    signal_audit = TrendSignalAudit()
     print("=" * 70)
     print("BINANCE SPOT — TREND FOLLOWING SCANNER")
     print("=" * 70)
@@ -830,7 +970,7 @@ def main() -> int:
         assets, audit = screen_spot(assets, effective_quotes, warnings)
         print(f"Univers après filtrage liquidité/spread : {len(assets):,}")
 
-        merge_trend_signals(assets, warnings)
+        signal_audit = merge_trend_signals(assets, warnings)
         long_count = sum(1 for a in assets if a.get("signalDirection") == "LONG")
         short_count = sum(1 for a in assets if a.get("signalDirection") == "SHORT")
         print(f"Signaux LONG : {long_count} | Signaux SHORT : {short_count}")
@@ -838,8 +978,9 @@ def main() -> int:
     except Exception as exc:
         errors.append(f"Erreur fatale : {exc}")
         assets, audit = [], CriterionAudit()
+        signal_audit = TrendSignalAudit()
 
-    html = build_report(assets, audit, warnings, errors)
+    html = build_report(assets, audit, signal_audit, warnings, errors)
     elapsed = time.time() - started
     subject = f"Binance Trend Following — {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC"
     try:

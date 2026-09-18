@@ -14,31 +14,53 @@ jobs:
     timeout-minutes: 20
 
     steps:
+
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
+
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      # ======================================================
+      # PYTHON
+      # ======================================================
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-      # Scanner MTF horaire : 1D -> 4H -> 1H.
-      # AMA/KAMA + SuperTrend. SL/trailing = calcul uniquement.
-      # Aucun suivi de position, aucun P/L, aucun ordre Binance.
+      # ======================================================
+      # VÉRIFICATION
+      # ======================================================
 
       - name: Verify files
         run: |
           test -f trend_following_binance.py
           echo "trend_following_binance.py : OK"
 
+      # ======================================================
+      # SCANNER
+      # ======================================================
+
       - name: Run Binance Trend Following Scanner
         env:
+
           PYTHONUNBUFFERED: "1"
           PYTHONIOENCODING: "utf-8"
+
+          # --------------------------------------------------
+          # BINANCE
+          # --------------------------------------------------
 
           BINANCE_BASE_URL: https://data-api.binance.vision
           BINANCE_SPOT_BASE_URL: https://data-api.binance.vision
           BINANCE_WEB_BASE_URL: https://www.binance.com
+
+          # --------------------------------------------------
+          # UNIVERS
+          # --------------------------------------------------
 
           QUOTE_ASSETS: ""
           EXCLUDE_STABLECOINS: "true"
@@ -48,49 +70,96 @@ jobs:
           MIN_24H_QUOTE_VOLUME: "1000000"
           MIN_HISTORY_DAYS: "30"
 
+          # --------------------------------------------------
+          # ORDER BOOK
+          # --------------------------------------------------
+
           ORDER_BOOK_DEPTH_ENABLED: "true"
           ORDER_BOOK_DEPTH_LIMIT: "100"
           ORDER_BOOK_DEPTH_PCT: "0.25"
           MIN_ORDER_BOOK_DEPTH_QUOTE: "25000"
           ORDER_BOOK_DEPTH_WORKERS: "8"
 
-          # MTF strategy: 1D -> 4H -> 1H
+          # ==================================================
+          # 1D — TENDANCE MAJEURE
+          # ==================================================
+
           DAILY_INTERVAL: "1d"
+
+          # AMA / KAMA
           DAILY_AMA_PERIOD: "50"
           DAILY_AMA_FAST: "2"
           DAILY_AMA_SLOW: "30"
+
           DAILY_KLINES_LIMIT: "300"
+
+          # SuperTrend TradingView
           DAILY_SUPERTREND_ATR_PERIOD: "10"
           DAILY_SUPERTREND_MULTIPLIER: "3.0"
 
+          # ==================================================
+          # 4H — CONFIRMATION
+          # ==================================================
+
           CONFIRM_INTERVAL: "4h"
+
+          # AMA / KAMA
           CONFIRM_AMA_PERIOD: "50"
           CONFIRM_AMA_FAST: "2"
           CONFIRM_AMA_SLOW: "30"
+
+          # SuperTrend TradingView
           CONFIRM_SUPERTREND_ATR_PERIOD: "10"
           CONFIRM_SUPERTREND_MULTIPLIER: "3.0"
+
           CONFIRM_KLINES_LIMIT: "300"
 
+          # ==================================================
+          # 1H — TIMING
+          # ==================================================
+
           TRIGGER_INTERVAL: "1h"
+
+          # AMA / KAMA
           TRIGGER_AMA_PERIOD: "50"
           TRIGGER_AMA_FAST: "2"
           TRIGGER_AMA_SLOW: "30"
+
+          # SuperTrend 12/3
           TRIGGER_SUPERTREND_ATR_PERIOD: "12"
           TRIGGER_SUPERTREND_MULTIPLIER: "3.0"
+
           TRIGGER_KLINES_LIMIT: "600"
+
           TREND_SIGNAL_DIRECTIONS: "BOTH"
+
+          # ==================================================
+          # ADX — INFORMATIF UNIQUEMENT
+          # ==================================================
 
           ADX_PERIOD: "14"
           ADX_THRESHOLD: "25"
+
+          # ==================================================
+          # MACD — BONUS
+          # ==================================================
 
           MACD_FAST_PERIOD: "12"
           MACD_SLOW_PERIOD: "26"
           MACD_SIGNAL_PERIOD: "9"
 
+          # ==================================================
+          # BOLLINGER — BONUS
+          # ==================================================
+
           BB_PERIOD: "20"
           BB_STDDEV_MULT: "2.0"
           BB_VOLUME_SMA_PERIOD: "20"
           BB_VOLUME_MULT: "1.5"
+
+          # ==================================================
+          # ICHIMOKU — BONUS
+          # ==================================================
 
           ICHIMOKU_TENKAN_PERIOD: "9"
           ICHIMOKU_KIJUN_PERIOD: "26"
@@ -101,19 +170,50 @@ jobs:
           BONUS_WEIGHT_BOLLINGER: "30"
           BONUS_WEIGHT_ICHIMOKU: "30"
 
-          # Risk: SuperTrend dynamique, sans TP rigide.
-          # 4H = choix par défaut plus conservateur ; 1H = plus agressif.
+          # ==================================================
+          # GESTION DU RISQUE
+          #
+          # 4H = référence principale
+          #
+          # SL :
+          #   SuperTrend 4H
+          #
+          # TRAILING :
+          #   SuperTrend 4H
+          #
+          # TP :
+          #   aucun TP fixe
+          #
+          # SORTIE :
+          #   retournement SuperTrend 4H
+          #
+          # IMPORTANT :
+          #   calcul uniquement
+          #   aucun monitoring
+          #   aucun ordre
+          # ==================================================
+
           RISK_ENABLED: "true"
           RISK_SUPERTREND_SOURCE: "4h"
+
+          # ==================================================
+          # HTTP
+          # ==================================================
 
           HTTP_TIMEOUT_SECONDS: "20"
           HTTP_RETRIES: "3"
 
+          # ==================================================
+          # EMAIL GMAIL
+          # ==================================================
+
           EMAIL_HOST: smtp.gmail.com
           EMAIL_PORT: "465"
+
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
+
           EMAIL_TOP_RESULTS: "50"
 
         run: |

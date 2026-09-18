@@ -1,0 +1,122 @@
+name: Binance Multi-Timeframe Trend Following Scanner
+
+"on":
+  workflow_dispatch:
+  schedule:
+    - cron: "5 * * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      # Architecture MTF :
+      # 1D = tendance de fond (Close vs EMA200)
+      # 4H = confirmation (Supertrend 10 x 3)
+      # 1H = déclencheur (nouveau flip Supertrend 10 x 3)
+      # Toutes les décisions utilisent uniquement des bougies clôturées.
+      # SL/TP/trailing = calcul uniquement avec ATR 1H.
+      # Aucun suivi, aucune simulation, aucun P/L et aucun ordre.
+
+      - name: Verify files
+        run: |
+          test -f trend_following_binance.py
+          echo "trend_following_binance.py : OK"
+
+      - name: Run Binance Multi-Timeframe Trend Following Scanner
+        env:
+          PYTHONUNBUFFERED: "1"
+          PYTHONIOENCODING: "utf-8"
+
+          BINANCE_BASE_URL: https://data-api.binance.vision
+          BINANCE_SPOT_BASE_URL: https://data-api.binance.vision
+          BINANCE_WEB_BASE_URL: https://www.binance.com
+
+          QUOTE_ASSETS: ""
+          EXCLUDE_STABLECOINS: "true"
+          EXCLUDE_LEVERAGED_TOKENS: "true"
+
+          MAX_SPREAD_PERCENT: "0.10"
+          MIN_24H_QUOTE_VOLUME: "1000000"
+          MIN_HISTORY_DAYS: "30"
+
+          ORDER_BOOK_DEPTH_ENABLED: "true"
+          ORDER_BOOK_DEPTH_LIMIT: "100"
+          ORDER_BOOK_DEPTH_PCT: "0.25"
+          MIN_ORDER_BOOK_DEPTH_QUOTE: "25000"
+          ORDER_BOOK_DEPTH_WORKERS: "8"
+
+          # ==================== MTF ====================
+          DAILY_INTERVAL: "1d"
+          DAILY_EMA_PERIOD: "200"
+          DAILY_KLINES_LIMIT: "260"
+
+          CONFIRM_INTERVAL: "4h"
+          CONFIRM_SUPERTREND_ATR_PERIOD: "10"
+          CONFIRM_SUPERTREND_MULTIPLIER: "3.0"
+          CONFIRM_KLINES_LIMIT: "250"
+
+          TRIGGER_INTERVAL: "1h"
+          TRIGGER_SUPERTREND_ATR_PERIOD: "10"
+          TRIGGER_SUPERTREND_MULTIPLIER: "3.0"
+          TRIGGER_KLINES_LIMIT: "500"
+          TREND_SIGNAL_DIRECTIONS: "BOTH"
+
+          # ==================== 1H confirmations ====================
+          ADX_PERIOD: "14"
+          ADX_THRESHOLD: "25"
+
+          MACD_FAST_PERIOD: "12"
+          MACD_SLOW_PERIOD: "26"
+          MACD_SIGNAL_PERIOD: "9"
+
+          BB_PERIOD: "20"
+          BB_STDDEV_MULT: "2.0"
+          BB_VOLUME_SMA_PERIOD: "20"
+          BB_VOLUME_MULT: "1.5"
+
+          ICHIMOKU_TENKAN_PERIOD: "9"
+          ICHIMOKU_KIJUN_PERIOD: "26"
+          ICHIMOKU_SENKOU_B_PERIOD: "52"
+          ICHIMOKU_DISPLACEMENT: "26"
+
+          BONUS_WEIGHT_MACD: "40"
+          BONUS_WEIGHT_BOLLINGER: "30"
+          BONUS_WEIGHT_ICHIMOKU: "30"
+
+          # ==================== Risk 1H ATR ====================
+          RISK_ENABLED: "true"
+          RISK_METHOD: "atr"
+          RISK_ATR_PERIOD: "14"
+          RISK_ATR_MULTIPLIER: "2.0"
+          RISK_RR_RATIO: "2.0"
+
+          # Fallback uniquement si RISK_METHOD=percent
+          RISK_SL_PERCENT: "3.0"
+          RISK_TP_PERCENT: "6.0"
+          RISK_TRAIL_PERCENT: "1.5"
+
+          HTTP_TIMEOUT_SECONDS: "20"
+          HTTP_RETRIES: "3"
+
+          EMAIL_HOST: smtp.gmail.com
+          EMAIL_PORT: "465"
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_TOP_RESULTS: "50"
+
+        run: |
+          python -u trend_following_binance.py
